@@ -473,20 +473,20 @@ export default function App() {
       {/* Header */}
       <header style={styles.header}>
         <div style={styles.headerLeft}>
-          <div style={styles.logo}>🎭</div>
+          <div style={styles.logo}> </div>
           <div>
             <div style={styles.headerTitle}>Jimmy Prompt Tester</div>
             <div style={styles.headerSub}>Internal tool · Vice Game</div>
           </div>
         </div>
-        {!isCallActive && (
+        {/* {!isCallActive && (
           <button
             style={styles.settingsBtn}
             onClick={() => setSettingsOpen(o => !o)}
           >
             {settingsOpen ? 'Hide Settings' : 'Show Settings'}
           </button>
-        )}
+        )} */}
       </header>
 
       <div style={styles.body}>
@@ -558,9 +558,9 @@ export default function App() {
               <span style={styles.statusText}>{statusText[phase]}</span>
               {phase === 'active' && (
                 <div style={styles.indicators}>
-                  {vadActive && <span style={styles.badge('green')}>🎤 Speaking</span>}
-                  {isProcessing && !isPlaying && <span style={styles.badge('yellow')}>⚡ Thinking</span>}
-                  {isPlaying && <span style={styles.badge('purple')}>🔊 Playing</span>}
+                  {vadActive && <span style={styles.badge('green')}>Speaking</span>}
+                  {isProcessing && !isPlaying && <span style={styles.badge('yellow')}>Thinking</span>}
+                  {isPlaying && <span style={styles.badge('purple')}>Playing</span>}
                 </div>
               )}
             </div>
@@ -570,14 +570,14 @@ export default function App() {
           <div style={styles.log}>
             {messages.length === 0 && !isCallActive && (
               <div style={styles.emptyState}>
-                <div style={styles.emptyIcon}>📞</div>
+                <div style={styles.emptyIcon}> </div>
                 <div style={styles.emptyTitle}>Ready to test</div>
                 <div style={styles.emptySub}>Configure the prompt and voice ID, then start a call.</div>
               </div>
             )}
             {messages.length === 0 && phase === 'ringing' && (
               <div style={styles.emptyState}>
-                <div style={{ ...styles.emptyIcon, animation: 'pulse 1s infinite' }}>📲</div>
+                <div style={{ ...styles.emptyIcon, animation: 'pulse 1s infinite' }}> </div>
                 <div style={styles.emptyTitle}>Calling Jimmy…</div>
                 <div style={styles.emptySub}>Generating greeting with your prompt.</div>
               </div>
@@ -586,7 +586,7 @@ export default function App() {
               <div key={i} style={styles.message(msg.role)}>
                 <div style={styles.msgMeta}>
                   <span style={styles.msgRole(msg.role)}>
-                    {msg.role === 'jimmy' ? '🎭 Jimmy' : '🧑 You'}
+                    {msg.role === 'jimmy' ? '  Jimmy' : '  You'}
                   </span>
                   <span style={styles.msgTime}>
                     {new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -610,11 +610,11 @@ export default function App() {
           <div style={styles.actions}>
             {!isCallActive ? (
               <button style={styles.callBtn} onClick={startCall}>
-                📞 Start Call
+                  Start Call
               </button>
             ) : (
               <button style={styles.hangupBtn} onClick={endCall}>
-                📴 End Call
+                  End Call
               </button>
             )}
           </div>
