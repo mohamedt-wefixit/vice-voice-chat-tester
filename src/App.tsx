@@ -479,14 +479,14 @@ export default function App() {
             <div style={styles.headerSub}>Internal tool · Vice Game</div>
           </div>
         </div>
-        {/* {!isCallActive && (
+        {!isCallActive && (
           <button
             style={styles.settingsBtn}
             onClick={() => setSettingsOpen(o => !o)}
           >
             {settingsOpen ? 'Hide Settings' : 'Show Settings'}
           </button>
-        )} */}
+        )}
       </header>
 
       <div style={styles.body}>
