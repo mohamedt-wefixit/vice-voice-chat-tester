@@ -22,7 +22,7 @@ Say goodbye (peace/later/bye/gotta go) ONLY after: (a) you've successfully arran
 10-15 words per reply, one punchy sentence, swear occasionally. No markdown. No stage directions.`;
 
 const DEFAULT_VOICE_ID = '09d4ef3e';
-const DEFAULT_BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://vice-git-main-mohamedt-wefixits-projects.vercel.app';
+const DEFAULT_BACKEND_URL = import.meta.env.VITE_BACKEND_URL || ' https://vice-game-backend-production.up.railway.app';
 const NOISE_GATE = 0.008;
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -601,7 +601,7 @@ export default function App() {
           {/* Error banner */}
           {error && (
             <div style={styles.errorBanner}>
-              ⚠️ {error}
+                {error}
               <button style={styles.errorClose} onClick={() => setError(null)}>✕</button>
             </div>
           )}
