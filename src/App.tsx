@@ -150,12 +150,13 @@ export default function App() {
 
     const wsUrl = backendUrl.replace('/api', '');
     const socket = io(wsUrl, {
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
+      upgrade: true,
       reconnection: true,
-      reconnectionDelay: 2000,
-      reconnectionDelayMax: 10000,
-      reconnectionAttempts: 10,
-      timeout: 8000,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 8000,
+      reconnectionAttempts: 20,
+      timeout: 10000,
     });
 
     socket.on('connect', () => {
