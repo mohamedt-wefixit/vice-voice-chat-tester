@@ -159,17 +159,17 @@ export default function App() {
     });
 
     socket.on('connect', () => {
-      console.log('✅ Socket connected');
+      console.log('✅ Socket connected:', socket.id);
       if (callActiveRef.current) setError(null);
     });
 
-    socket.on('disconnect', () => {
-      console.log('Socket disconnected');
+    socket.on('disconnect', (reason) => {
+      console.log('🔌 Socket disconnected:', reason);
     });
 
     socket.on('connect_error', (err) => {
       if (!callActiveRef.current) return;
-      console.error('Socket error:', err.message);
+      console.error('❌ Socket connection error:', err.message);
       setError('Connection lost — retrying…');
     });
 
@@ -180,8 +180,12 @@ export default function App() {
       ttsProcessingTime: number;
       totalChunks: number;
       streamingComplete: boolean;
+      ttfaTime?: number;
     }) => {
       if (!callActiveRef.current) return;
+
+      console.log('🎭 Jimmy greeting:', data.text);
+      if (data.ttfaTime) console.log(`   ⚡ Time-to-first-audio: ${data.ttfaTime}ms`);
 
       // Stop any ringtone
       setPhase('active');
@@ -195,7 +199,9 @@ export default function App() {
       if (audioContext && streamingStartTimeRef.current > 0) {
         const remaining = Math.max(0, streamingStartTimeRef.current - audioContext.currentTime);
         const waitTime = Math.max(0, remaining * 1000 - 500);
+        console.log(`   ⏳ Waiting ${waitTime.toFixed(0)}ms for greeting to finish...`);
         await new Promise(r => setTimeout(r, waitTime));
+        console.log('   ✅ Streamed greeting complete');
       }
 
       setIsPlaying(false);
@@ -207,6 +213,7 @@ export default function App() {
         socketRef.current.emit('voicePlaybackComplete', { sessionId: sessionIdRef.current });
       }
 
+      console.log('🎤 Greeting played, NOW enabling microphone...');
       // Open mic — stream already held from requestMicPermission, so this is instant
       startMicrophone();
     });
@@ -249,6 +256,10 @@ export default function App() {
       if (data.audioChunk) {
         await playPcmChunk(data.audioChunk, data.isFirst);
       }
+
+      if (data.isLast) {
+        console.log(`📦 Last audio chunk received (#${data.chunkIndex})`);
+      }
     });
 
     // ── Response (fires after last chunk) ─────────────────────────────────
@@ -256,11 +267,23 @@ export default function App() {
       sessionId: string;
       text: string;
       isCallEnding?: boolean;
+      sttProcessingTime?: number;
+      processingTime?: number;
+      ttfaTime?: number;
+      ttsProcessingTime?: number;
+      totalPipelineTime?: number;
     }) => {
       if (!callActiveRef.current) return;
 
       // Reset barge-in gate — new Jimmy response means a fresh barge-in is allowed
       bargeInFiredRef.current = false;
+
+      console.log('🎭 Jimmy says:', data.text);
+      if (data.sttProcessingTime) console.log(`   STT: ${data.sttProcessingTime}ms`);
+      if (data.processingTime) console.log(`   LLM: ${data.processingTime}ms`);
+      if (data.ttfaTime) console.log(`   ⚡ Time-to-first-audio: ${data.ttfaTime}ms`);
+      if (data.ttsProcessingTime) console.log(`   TTS total: ${data.ttsProcessingTime}ms`);
+      if (data.totalPipelineTime) console.log(`   🚀 Total pipeline: ${data.totalPipelineTime}ms`);
 
       setMessages(prev => [...prev, { role: 'jimmy', text: data.text, ts: Date.now() }]);
       setIsProcessing(false);
@@ -270,7 +293,9 @@ export default function App() {
       if (audioContext && streamingStartTimeRef.current > 0) {
         const remaining = Math.max(0, streamingStartTimeRef.current - audioContext.currentTime);
         const waitTime = Math.max(0, remaining * 1000 - 500);
+        console.log(`   ⏳ Waiting ${waitTime.toFixed(0)}ms for streaming to complete...`);
         await new Promise(r => setTimeout(r, waitTime));
+        console.log('   ✅ Streamed response complete');
       }
 
       setIsPlaying(false);
@@ -283,6 +308,7 @@ export default function App() {
       }
 
       if (data.isCallEnding) {
+        console.log('👋 Call ending naturally');
         setPhase('ending');
         setTimeout(() => {
           if (callActiveRef.current) cleanupCall();
@@ -299,20 +325,29 @@ export default function App() {
         data.text === '[No speech detected]' ||
         data.text === '[Transcription failed]'
       ) {
+        console.log(`🔇 Noise/silence rejected: "${data.text}" — ignoring silently`);
         setIsProcessing(false);
         return;
       }
+      console.log('🎤 You said:', data.text);
       setIsProcessing(false);
       setMessages(prev => [...prev, { role: 'user', text: data.text, ts: Date.now() }]);
     });
 
-    socket.on('voiceSpeechStart', () => setVadActive(true));
-    socket.on('voiceSpeechEnd', () => { setVadActive(false); setIsProcessing(true); });
+    socket.on('voiceSpeechStart', () => {
+      console.log('🗣️ Speech detected (VAD)');
+      setVadActive(true);
+    });
+    socket.on('voiceSpeechEnd', () => {
+      console.log('🔚 Speech ended — processing...');
+      setVadActive(false);
+      setIsProcessing(true);
+    });
 
     socket.on('voiceProcessingStart', () => setIsProcessing(true));
 
     socket.on('voiceError', (data: { error: string }) => {
-      console.error('Voice error:', data.error);
+      console.error('❌ Voice error:', data.error);
       setIsProcessing(false);
       const isFatal = data.error.toLowerCase().includes('connect') ||
                       data.error.toLowerCase().includes('session');
@@ -321,6 +356,7 @@ export default function App() {
 
     // Backend confirmed barge-in — audio already stopped in the processor
     socket.on('voiceStopAudio', () => {
+      console.log('⏹️ voiceStopAudio — barge-in confirmed by backend');
       bargeInFiredRef.current = false;
       jimmySpeakingRef.current = false;
       setIsPlaying(false);
@@ -328,6 +364,7 @@ export default function App() {
     });
 
     socket.on('voiceCallEnded', () => {
+      console.log('📴 voiceCallEnded received');
       if (callActiveRef.current) cleanupCall();
     });
 
@@ -342,6 +379,7 @@ export default function App() {
   // doesn't start the audio processor yet so nothing is sent to the backend.
   const requestMicPermission = useCallback(async () => {
     if (streamRef.current) return; // already granted
+    console.log('🎤 Requesting mic permission early...');
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -355,12 +393,13 @@ export default function App() {
       streamRef.current = stream;
       console.log('✅ Mic permission granted — stream held, processor not started yet');
     } catch (err) {
-      console.error('Mic permission denied:', err);
+      console.error('❌ Mic permission denied:', err);
       setError('Microphone access denied');
     }
   }, []);
 
   const startMicrophone = useCallback(async () => {
+    console.log('🎤 Starting microphone streaming...');
     try {
       // Reuse stream from early permission request if available
       if (!streamRef.current) {
@@ -404,6 +443,7 @@ export default function App() {
 
           if (rms > BARGE_IN_THRESHOLD && !bargeInFiredRef.current && socketRef.current && sessionIdRef.current) {
             bargeInFiredRef.current = true;
+            console.log(`🚨 Barge-in detected (rms=${rms.toFixed(4)}) — interrupting Jimmy`);
             // Stop Jimmy's audio immediately
             if (streamingAudioContextRef.current) {
               streamingAudioContextRef.current.close();
@@ -446,8 +486,9 @@ export default function App() {
           audioData: Array.from(int16),
         });
       };
+      console.log('✅ Microphone streaming started');
     } catch (err) {
-      console.error('Mic error:', err);
+      console.error('❌ Failed to start microphone:', err);
       setError('Microphone access denied');
     }
   }, []);
@@ -492,6 +533,7 @@ export default function App() {
   }, [stopMicrophone]);
 
   const startCall = useCallback(async () => {
+    console.log('📞 Starting call...');
     setError(null);
     setMessages([]);
     setPhase('connecting');
@@ -523,6 +565,8 @@ export default function App() {
 
       const sessionId = `voice_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       sessionIdRef.current = sessionId;
+      console.log('🎤 Joining voice session:', sessionId);
+      console.log('⏸️ Mic stream ready, processor starts after greeting plays...');
 
       socket.emit('joinVoiceSession', {
         sessionId,
@@ -535,6 +579,7 @@ export default function App() {
     } catch (err) {
       callActiveRef.current = false;
       setPhase('idle');
+      console.error('❌ Failed to start call:', err);
       setError(err instanceof Error ? err.message : 'Failed to connect');
       socket.disconnect();
       socketRef.current = null;
@@ -542,6 +587,7 @@ export default function App() {
   }, [initSocket, requestMicPermission, systemPrompt, voiceId]);
 
   const endCall = useCallback(() => {
+    console.log('📴 Ending call...');
     if (sessionIdRef.current && socketRef.current?.connected) {
       socketRef.current.emit('leaveVoiceSession', { sessionId: sessionIdRef.current });
     }
