@@ -18,7 +18,7 @@ Make sure the main backend is running (`cd backend && npm run dev`).
 1. Create a new Vercel project pointing to the `prompt-tester/` folder as the root.
 2. Set the environment variable:
    ```
-   VITE_BACKEND_URL=https://vice-lac.vercel.app
+   VITE_BACKEND_URL=https://vice-game-backend-production.up.railway.app
    ```
 3. Deploy — Vercel will auto-detect Vite..
 
