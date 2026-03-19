@@ -24,7 +24,7 @@ Say goodbye (peace/later/bye/gotta go) ONLY after: (a) you've successfully arran
 const DEFAULT_VOICE_ID = '09d4ef3e';
 const DEFAULT_BACKEND_URL =
   import.meta.env.VITE_BACKEND_URL ||
-  'https://vice-lac.vercel.app';
+  'https://vice-game-backend-production.up.railway.app';
 const NOISE_GATE = 0.02;       // Filters background noise; speech is typically 0.03-0.15
 const BARGE_IN_THRESHOLD = 0.06; // ~3x noise gate — requires actual speech to trigger barge-in
 
@@ -563,7 +563,7 @@ export default function App() {
       {/* Header */}
       <header style={styles.header}>
         <div style={styles.headerLeft}>
-          <div style={styles.logo}>🎭</div>
+          <div style={styles.logo}></div>
           <div>
             <div style={styles.headerTitle}>Jimmy Prompt Tester</div>
             <div style={styles.headerSub}>Internal tool · Vice Game</div>
@@ -660,7 +660,7 @@ export default function App() {
           <div style={styles.log}>
             {messages.length === 0 && !isCallActive && (
               <div style={styles.emptyState}>
-                <div style={styles.emptyIcon}>📞</div>
+                <div style={styles.emptyIcon}></div>
                 <div style={styles.emptyTitle}>Ready to test</div>
                 <div style={styles.emptySub}>Configure the prompt and voice ID, then start a call.</div>
               </div>
@@ -676,7 +676,7 @@ export default function App() {
               <div key={i} style={styles.message(msg.role)}>
                 <div style={styles.msgMeta}>
                   <span style={styles.msgRole(msg.role)}>
-                    {msg.role === 'jimmy' ? '🎭 Jimmy' : '🧑 You'}
+                    {msg.role === 'jimmy' ? ' Jimmy' : '🧑 You'}
                   </span>
                   <span style={styles.msgTime}>
                     {new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -691,7 +691,7 @@ export default function App() {
           {/* Error banner */}
           {error && (
             <div style={styles.errorBanner}>
-              ⚠️ {error}
+               {error}
               <button style={styles.errorClose} onClick={() => setError(null)}>✕</button>
             </div>
           )}
@@ -700,11 +700,11 @@ export default function App() {
           <div style={styles.actions}>
             {!isCallActive ? (
               <button style={styles.callBtn} onClick={startCall}>
-                📞 Start Call
+                 Start Call
               </button>
             ) : (
               <button style={styles.hangupBtn} onClick={endCall}>
-                📴 End Call
+                 End Call
               </button>
             )}
           </div>
