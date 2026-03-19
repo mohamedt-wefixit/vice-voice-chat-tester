@@ -188,18 +188,26 @@ export default function App() {
 
       setMessages(prev => [...prev, { role: 'jimmy', text: data.text, ts: Date.now() }]);
 
-      // Wait for audio to finish, then enable mic
+      // Wait for greeting audio to nearly finish (500ms early) then open mic.
+      // The 1200ms deaf period in the processor handles remaining echo — no need
+      // to also start the echo guard timer here.
       const audioContext = streamingAudioContextRef.current;
       if (audioContext && streamingStartTimeRef.current > 0) {
         const remaining = Math.max(0, streamingStartTimeRef.current - audioContext.currentTime);
-        await new Promise(r => setTimeout(r, remaining * 1000 + 150));
+        const waitTime = Math.max(0, remaining * 1000 - 500);
+        await new Promise(r => setTimeout(r, waitTime));
       }
 
       setIsPlaying(false);
       jimmySpeakingRef.current = false;
-      echoGuardRef.current = Date.now();
+      echoGuardRef.current = 0; // let 1200ms deaf period handle echo, don't stack 600ms on top
 
-      // Open mic
+      // Tell backend greeting playback is done
+      if (socketRef.current && sessionIdRef.current) {
+        socketRef.current.emit('voicePlaybackComplete', { sessionId: sessionIdRef.current });
+      }
+
+      // Open mic — stream already held from requestMicPermission, so this is instant
       startMicrophone();
     });
 
