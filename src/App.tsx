@@ -150,8 +150,7 @@ export default function App() {
 
     const wsUrl = backendUrl.replace('/api', '');
     const socket = io(wsUrl, {
-      transports: ['polling', 'websocket'],
-      upgrade: true,
+      transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 1000,
       reconnectionDelayMax: 8000,
@@ -166,6 +165,18 @@ export default function App() {
 
     socket.on('disconnect', (reason) => {
       console.log('🔌 Socket disconnected:', reason);
+      if (callActiveRef.current) {
+        setError('Connection lost — reconnecting…');
+        // Stop mic and audio immediately so we don't keep streaming to a dead socket
+        if (streamingAudioContextRef.current) {
+          try { streamingAudioContextRef.current.close(); } catch (_) {}
+          streamingAudioContextRef.current = null;
+        }
+        jimmySpeakingRef.current = false;
+        setIsPlaying(false);
+        setIsProcessing(false);
+        setVadActive(false);
+      }
     });
 
     socket.on('connect_error', (err) => {
@@ -1024,4 +1035,3 @@ const s = {
     boxShadow: '0 8px 28px rgba(239,68,68,0.5)',
   } as React.CSSProperties,
 };
-//
