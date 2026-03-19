@@ -22,8 +22,11 @@ Say goodbye (peace/later/bye/gotta go) ONLY after: (a) you've successfully arran
 10-15 words per reply, one punchy sentence, swear occasionally. No markdown. No stage directions.`;
 
 const DEFAULT_VOICE_ID = '09d4ef3e';
-const DEFAULT_BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://vice-game-backend-production.up.railway.app';
-const NOISE_GATE = 0.008;
+const DEFAULT_BACKEND_URL =
+  import.meta.env.VITE_BACKEND_URL ||
+  'https://vice-lac.vercel.app';
+const NOISE_GATE = 0.02;       // Filters background noise; speech is typically 0.03-0.15
+const BARGE_IN_THRESHOLD = 0.06; // ~3x noise gate — requires actual speech to trigger barge-in
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -84,6 +87,8 @@ export default function App() {
   const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const callStartTimeRef = useRef<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  // Barge-in: prevents firing voiceBargeIn multiple times per Jimmy turn
+  const bargeInFiredRef = useRef(false);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -211,6 +216,11 @@ export default function App() {
     }) => {
       if (!callActiveRef.current) return;
 
+      // Drop in-flight chunks from an interrupted (barged-in) response.
+      // When isFirst arrives it means a fresh response is starting — reset the gate.
+      if (bargeInFiredRef.current && !data.isFirst) return;
+      if (data.isFirst) bargeInFiredRef.current = false;
+
       if (data.isFirst) {
         firstChunkTimeRef.current = Date.now();
         streamingSampleRateRef.current = data.sampleRate || 16000;
@@ -241,19 +251,28 @@ export default function App() {
     }) => {
       if (!callActiveRef.current) return;
 
+      // Reset barge-in gate — new Jimmy response means a fresh barge-in is allowed
+      bargeInFiredRef.current = false;
+
       setMessages(prev => [...prev, { role: 'jimmy', text: data.text, ts: Date.now() }]);
       setIsProcessing(false);
 
-      // Wait for audio playback to complete
+      // Wait for audio playback to complete (500ms early so user can respond quickly)
       const audioContext = streamingAudioContextRef.current;
       if (audioContext && streamingStartTimeRef.current > 0) {
         const remaining = Math.max(0, streamingStartTimeRef.current - audioContext.currentTime);
-        await new Promise(r => setTimeout(r, remaining * 1000 + 150));
+        const waitTime = Math.max(0, remaining * 1000 - 500);
+        await new Promise(r => setTimeout(r, waitTime));
       }
 
       setIsPlaying(false);
       jimmySpeakingRef.current = false;
       echoGuardRef.current = Date.now();
+
+      // Tell backend audio is done so it releases isProcessing immediately
+      if (socketRef.current && sessionIdRef.current) {
+        socketRef.current.emit('voicePlaybackComplete', { sessionId: sessionIdRef.current });
+      }
 
       if (data.isCallEnding) {
         setPhase('ending');
@@ -264,13 +283,23 @@ export default function App() {
     });
 
     // ── Transcription ──────────────────────────────────────────────────────
-    socket.on('voiceTranscription', (data: { sessionId: string; text: string }) => {
+    socket.on('voiceTranscription', (data: { sessionId: string; text: string; isFinal?: boolean }) => {
       if (!callActiveRef.current || !data.text.trim()) return;
+      // Drop sentinel values (noise/unclear rejections) — just clear processing state
+      if (
+        data.text === '[Unclear]' ||
+        data.text === '[No speech detected]' ||
+        data.text === '[Transcription failed]'
+      ) {
+        setIsProcessing(false);
+        return;
+      }
+      setIsProcessing(false);
       setMessages(prev => [...prev, { role: 'user', text: data.text, ts: Date.now() }]);
     });
 
     socket.on('voiceSpeechStart', () => setVadActive(true));
-    socket.on('voiceSpeechEnd', () => setVadActive(false));
+    socket.on('voiceSpeechEnd', () => { setVadActive(false); setIsProcessing(true); });
 
     socket.on('voiceProcessingStart', () => setIsProcessing(true));
 
@@ -280,6 +309,14 @@ export default function App() {
       const isFatal = data.error.toLowerCase().includes('connect') ||
                       data.error.toLowerCase().includes('session');
       if (isFatal) setError(data.error);
+    });
+
+    // Backend confirmed barge-in — audio already stopped in the processor
+    socket.on('voiceStopAudio', () => {
+      bargeInFiredRef.current = false;
+      jimmySpeakingRef.current = false;
+      setIsPlaying(false);
+      setIsProcessing(false);
     });
 
     socket.on('voiceCallEnded', () => {
@@ -293,7 +330,10 @@ export default function App() {
 
   // ── Microphone ────────────────────────────────────────────────────────────
 
-  const startMicrophone = useCallback(async () => {
+  // Request mic permission early (before Jimmy speaks) — holds the stream but
+  // doesn't start the audio processor yet so nothing is sent to the backend.
+  const requestMicPermission = useCallback(async () => {
+    if (streamRef.current) return; // already granted
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -304,8 +344,31 @@ export default function App() {
           channelCount: 1,
         },
       });
-
       streamRef.current = stream;
+      console.log('✅ Mic permission granted — stream held, processor not started yet');
+    } catch (err) {
+      console.error('Mic permission denied:', err);
+      setError('Microphone access denied');
+    }
+  }, []);
+
+  const startMicrophone = useCallback(async () => {
+    try {
+      // Reuse stream from early permission request if available
+      if (!streamRef.current) {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            sampleRate: 16000,
+            channelCount: 1,
+          },
+        });
+        streamRef.current = stream;
+      }
+
+      const stream = streamRef.current!;
       const audioCtx = new AudioContext({ sampleRate: 16000 });
       audioContextRef.current = audioCtx;
 
@@ -323,8 +386,30 @@ export default function App() {
 
         // 1200ms deaf period to avoid capturing greeting echo
         if (Date.now() - micStartedAtRef.current < 1200) return;
-        // Mute while Jimmy speaks
-        if (jimmySpeakingRef.current) return;
+
+        // While Jimmy is speaking, check for barge-in before muting
+        if (jimmySpeakingRef.current) {
+          const inputData = e.inputBuffer.getChannelData(0);
+          let sumSq = 0;
+          for (let i = 0; i < inputData.length; i++) sumSq += inputData[i] * inputData[i];
+          const rms = Math.sqrt(sumSq / inputData.length);
+
+          if (rms > BARGE_IN_THRESHOLD && !bargeInFiredRef.current && socketRef.current && sessionIdRef.current) {
+            bargeInFiredRef.current = true;
+            // Stop Jimmy's audio immediately
+            if (streamingAudioContextRef.current) {
+              streamingAudioContextRef.current.close();
+              streamingAudioContextRef.current = null;
+            }
+            socketRef.current.emit('voiceBargeIn', { sessionId: sessionIdRef.current });
+            jimmySpeakingRef.current = false;
+            echoGuardRef.current = 0;
+            setIsPlaying(false);
+            setIsProcessing(false);
+          }
+          return;
+        }
+
         // 600ms echo guard after Jimmy stops
         if (Date.now() - echoGuardRef.current < 600) return;
 
@@ -374,6 +459,7 @@ export default function App() {
     callActiveRef.current = false;
     sessionIdRef.current = null;
     jimmySpeakingRef.current = false;
+    bargeInFiredRef.current = false;
 
     stopMicrophone();
 
@@ -423,6 +509,10 @@ export default function App() {
         }
       }, 1000);
 
+      // Request mic permission NOW — before Jimmy speaks, so there's no popup mid-greeting.
+      // The stream is held in streamRef; the processor won't start until greeting ends.
+      await requestMicPermission();
+
       const sessionId = `voice_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
       sessionIdRef.current = sessionId;
 
@@ -441,7 +531,7 @@ export default function App() {
       socket.disconnect();
       socketRef.current = null;
     }
-  }, [initSocket, systemPrompt, voiceId]);
+  }, [initSocket, requestMicPermission, systemPrompt, voiceId]);
 
   const endCall = useCallback(() => {
     if (sessionIdRef.current && socketRef.current?.connected) {
@@ -473,7 +563,7 @@ export default function App() {
       {/* Header */}
       <header style={styles.header}>
         <div style={styles.headerLeft}>
-          <div style={styles.logo}> </div>
+          <div style={styles.logo}>🎭</div>
           <div>
             <div style={styles.headerTitle}>Jimmy Prompt Tester</div>
             <div style={styles.headerSub}>Internal tool · Vice Game</div>
@@ -558,9 +648,9 @@ export default function App() {
               <span style={styles.statusText}>{statusText[phase]}</span>
               {phase === 'active' && (
                 <div style={styles.indicators}>
-                  {vadActive && <span style={styles.badge('green')}>Speaking</span>}
-                  {isProcessing && !isPlaying && <span style={styles.badge('yellow')}>Thinking</span>}
-                  {isPlaying && <span style={styles.badge('purple')}>Playing</span>}
+                  {vadActive && <span style={styles.badge('green')}>🎤 Speaking</span>}
+                  {isProcessing && !isPlaying && <span style={styles.badge('yellow')}>⚡ Thinking</span>}
+                  {isPlaying && <span style={styles.badge('purple')}>🔊 Playing</span>}
                 </div>
               )}
             </div>
@@ -570,14 +660,14 @@ export default function App() {
           <div style={styles.log}>
             {messages.length === 0 && !isCallActive && (
               <div style={styles.emptyState}>
-                <div style={styles.emptyIcon}> </div>
+                <div style={styles.emptyIcon}>📞</div>
                 <div style={styles.emptyTitle}>Ready to test</div>
                 <div style={styles.emptySub}>Configure the prompt and voice ID, then start a call.</div>
               </div>
             )}
             {messages.length === 0 && phase === 'ringing' && (
               <div style={styles.emptyState}>
-                <div style={{ ...styles.emptyIcon, animation: 'pulse 1s infinite' }}> </div>
+                <div style={{ ...styles.emptyIcon, animation: 'pulse 1s infinite' }}>📲</div>
                 <div style={styles.emptyTitle}>Calling Jimmy…</div>
                 <div style={styles.emptySub}>Generating greeting with your prompt.</div>
               </div>
@@ -586,7 +676,7 @@ export default function App() {
               <div key={i} style={styles.message(msg.role)}>
                 <div style={styles.msgMeta}>
                   <span style={styles.msgRole(msg.role)}>
-                    {msg.role === 'jimmy' ? '  Jimmy' : '  You'}
+                    {msg.role === 'jimmy' ? '🎭 Jimmy' : '🧑 You'}
                   </span>
                   <span style={styles.msgTime}>
                     {new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
@@ -601,7 +691,7 @@ export default function App() {
           {/* Error banner */}
           {error && (
             <div style={styles.errorBanner}>
-                {error}
+              ⚠️ {error}
               <button style={styles.errorClose} onClick={() => setError(null)}>✕</button>
             </div>
           )}
@@ -610,11 +700,11 @@ export default function App() {
           <div style={styles.actions}>
             {!isCallActive ? (
               <button style={styles.callBtn} onClick={startCall}>
-                  Start Call
+                📞 Start Call
               </button>
             ) : (
               <button style={styles.hangupBtn} onClick={endCall}>
-                  End Call
+                📴 End Call
               </button>
             )}
           </div>
