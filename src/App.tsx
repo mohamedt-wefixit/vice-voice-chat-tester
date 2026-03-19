@@ -381,12 +381,13 @@ export default function App() {
     if (streamRef.current) return; // already granted
     console.log('🎤 Requesting mic permission early...');
     try {
+      // Don't constrain sampleRate — browsers like Firefox/Safari ignore it and
+      // return the device's native rate. We resample to 16kHz in the processor.
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
-          sampleRate: 16000,
           channelCount: 1,
         },
       });
@@ -408,7 +409,6 @@ export default function App() {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true,
-            sampleRate: 16000,
             channelCount: 1,
           },
         });
@@ -416,8 +416,13 @@ export default function App() {
       }
 
       const stream = streamRef.current!;
-      const audioCtx = new AudioContext({ sampleRate: 16000 });
+
+      // Use the stream's native sample rate to avoid cross-rate AudioContext errors
+      // (Firefox/Safari ignore the sampleRate getUserMedia constraint).
+      const nativeSampleRate = stream.getAudioTracks()[0]?.getSettings().sampleRate || 44100;
+      const audioCtx = new AudioContext({ sampleRate: nativeSampleRate });
       audioContextRef.current = audioCtx;
+      console.log(`   Native sample rate: ${nativeSampleRate}Hz — will resample to 16kHz`);
 
       const source = audioCtx.createMediaStreamSource(stream);
       const processor = audioCtx.createScriptProcessor(2048, 1, 1);
@@ -428,18 +433,37 @@ export default function App() {
 
       micStartedAtRef.current = Date.now();
 
+      // Linear interpolation resample: nativeSampleRate → TARGET_SAMPLE_RATE
+      const TARGET_SAMPLE_RATE = 16000;
+      const resample = (input: Float32Array, inRate: number, outRate: number): Float32Array => {
+        if (inRate === outRate) return input;
+        const ratio = inRate / outRate;
+        const outLength = Math.round(input.length / ratio);
+        const output = new Float32Array(outLength);
+        for (let i = 0; i < outLength; i++) {
+          const pos = i * ratio;
+          const idx = Math.floor(pos);
+          const frac = pos - idx;
+          const a = input[idx] ?? 0;
+          const b = input[idx + 1] ?? a;
+          output[i] = a + frac * (b - a);
+        }
+        return output;
+      };
+
       processor.onaudioprocess = (e: AudioProcessingEvent) => {
         if (!socketRef.current || !sessionIdRef.current) return;
 
         // 1200ms deaf period to avoid capturing greeting echo
         if (Date.now() - micStartedAtRef.current < 1200) return;
 
+        const rawInput = e.inputBuffer.getChannelData(0);
+
         // While Jimmy is speaking, check for barge-in before muting
         if (jimmySpeakingRef.current) {
-          const inputData = e.inputBuffer.getChannelData(0);
           let sumSq = 0;
-          for (let i = 0; i < inputData.length; i++) sumSq += inputData[i] * inputData[i];
-          const rms = Math.sqrt(sumSq / inputData.length);
+          for (let i = 0; i < rawInput.length; i++) sumSq += rawInput[i] * rawInput[i];
+          const rms = Math.sqrt(sumSq / rawInput.length);
 
           if (rms > BARGE_IN_THRESHOLD && !bargeInFiredRef.current && socketRef.current && sessionIdRef.current) {
             bargeInFiredRef.current = true;
@@ -461,7 +485,9 @@ export default function App() {
         // 600ms echo guard after Jimmy stops
         if (Date.now() - echoGuardRef.current < 600) return;
 
-        const inputData = e.inputBuffer.getChannelData(0);
+        // Resample to 16kHz before RMS / sending
+        const inputData = resample(rawInput, nativeSampleRate, TARGET_SAMPLE_RATE);
+
         let sumSq = 0;
         for (let i = 0; i < inputData.length; i++) sumSq += inputData[i] * inputData[i];
         const rms = Math.sqrt(sumSq / inputData.length);
@@ -604,190 +630,145 @@ export default function App() {
   // ── UI ────────────────────────────────────────────────────────────────────
 
   const isCallActive = phase !== 'idle';
-  const statusText: Record<CallPhase, string> = {
-    idle: '',
-    connecting: 'Connecting…',
-    ringing: 'Calling Jimmy…',
-    active: formatDuration(duration),
-    ending: 'Call ending…',
-  };
+
+  // Status dot color for the avatar indicator
+  const dotColor = vadActive       ? '#f87171'   // red — user speaking
+    : isProcessing                 ? '#60a5fa'   // blue — thinking
+    : isPlaying                    ? '#c084fc'   // purple — Jimmy speaking
+    : isCallActive                 ? '#4ade80'   // green — idle in call
+    : '#6b7280';                                 // gray — disconnected
+
+  // Status text shown below Jimmy's name during call
+  const callStatusText =
+      phase === 'connecting' || phase === 'ringing' ? 'Calling...'
+    : isProcessing  ? 'Thinking...'
+    : isPlaying     ? 'Speaking...'
+    : vadActive     ? 'Listening...'
+    : phase === 'ending' ? 'Ending call...'
+    : 'In call';
+
+  // Top connection label
+  const topLabel =
+      phase === 'connecting' ? 'Connecting...'
+    : phase === 'ringing'    ? 'Calling...'
+    : phase === 'active'     ? `Connected · ${formatDuration(duration)}`
+    : phase === 'ending'     ? 'Ending...'
+    : '';
+  const topLabelColor = phase === 'active' ? '#4ade80' : '#fbbf24';
 
   return (
-    <div style={styles.root}>
-      {/* Header */}
-      <header style={styles.header}>
-        <div style={styles.headerLeft}>
-          <div style={styles.logo}></div>
-          <div>
-            <div style={styles.headerTitle}>Jimmy Prompt Tester</div>
-            <div style={styles.headerSub}>Internal tool · Vice Game</div>
+    <div style={{ height: '100vh', background: '#000', color: '#fff', display: 'flex', flexDirection: 'column' }}>
+
+      {/* ── IDLE: Settings screen ────────────────────────────────────────── */}
+      {!isCallActive && (
+        <div style={s.idleRoot}>
+          <header style={s.idleHeader}>
+            <div style={s.idleHeaderLeft}>
+              <span style={{ fontSize: 22 }}>🧪</span>
+              <div>
+                <div style={s.idleTitle}>Jimmy Prompt Tester</div>
+                <div style={s.idleSub}>Internal tool · Vice Game</div>
+              </div>
+            </div>
+            <button style={s.settingsToggle} onClick={() => setSettingsOpen(o => !o)}>
+              {settingsOpen ? 'Hide Settings' : 'Show Settings'}
+            </button>
+          </header>
+
+          <div style={s.idleBody}>
+            {settingsOpen && (
+              <div style={s.settingsPanel}>
+                <p style={s.sectionLabel}>Configuration</p>
+
+                <label style={s.fieldLabel}>
+                  Backend URL
+                  <input style={s.input} value={backendUrl}
+                    onChange={e => setBackendUrl(e.target.value)}
+                    placeholder="http://localhost:3001" spellCheck={false} />
+                </label>
+
+                <label style={s.fieldLabel}>
+                  Voice ID
+                  <div style={s.row}>
+                    <input style={{ ...s.input, fontFamily: 'monospace', flex: 1 }} value={voiceId}
+                      onChange={e => setVoiceId(e.target.value)} placeholder="09d4ef3e" spellCheck={false} />
+                    <button style={s.resetBtn} onClick={() => setVoiceId(DEFAULT_VOICE_ID)}>↺</button>
+                  </div>
+                  <span style={s.hint}>Default: <code style={s.mono}>{DEFAULT_VOICE_ID}</code></span>
+                </label>
+
+                <label style={s.fieldLabel}>
+                  System Prompt
+                  <div style={s.row}>
+                    <span style={s.hint}>{systemPrompt.length} chars</span>
+                    <button style={s.resetBtn} onClick={() => setSystemPrompt(DEFAULT_SYSTEM_PROMPT)}>Reset to default</button>
+                  </div>
+                  <textarea style={s.textarea} value={systemPrompt}
+                    onChange={e => setSystemPrompt(e.target.value)} rows={14} spellCheck={false} />
+                </label>
+              </div>
+            )}
+
+            {error && (
+              <div style={s.errorBanner}>
+                {error}
+                <button style={s.errorClose} onClick={() => setError(null)}>✕</button>
+              </div>
+            )}
+
+            <div style={s.callBtnWrap}>
+              <button style={s.callBtn} onClick={startCall}>
+                <span style={{ fontSize: 20 }}>📞</span>
+                Call Jimmy
+              </button>
+            </div>
           </div>
         </div>
-        {!isCallActive && (
-          <button
-            style={styles.settingsBtn}
-            onClick={() => setSettingsOpen(o => !o)}
-          >
-            {settingsOpen ? 'Hide Settings' : 'Show Settings'}
-          </button>
-        )}
-      </header>
+      )}
 
-      <div style={styles.body}>
-        {/* Settings panel */}
-        {settingsOpen && !isCallActive && (
-          <aside style={styles.settings}>
-            <h2 style={styles.sectionTitle}>Configuration</h2>
+      {/* ── ACTIVE: Phone call UI ───────────────────────────────────────── */}
+      {isCallActive && (
+        <div style={s.callRoot}>
+          <div style={s.callBg} />
+          <div style={s.callCard}>
+            {/* Top — status */}
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ color: topLabelColor, fontSize: 13, fontWeight: 600 }}>{topLabel}</div>
+              {error && <div style={{ color: '#f87171', fontSize: 12, marginTop: 4 }}>{error}</div>}
+            </div>
 
-            <label style={styles.label}>
-              Backend URL
-              <input
-                style={styles.input}
-                value={backendUrl}
-                onChange={e => setBackendUrl(e.target.value)}
-                placeholder="http://localhost:3001"
-                spellCheck={false}
-              />
-            </label>
-
-            <label style={styles.label}>
-              Voice ID
-              <div style={styles.voiceRow}>
-                <input
-                  style={{ ...styles.input, fontFamily: 'JetBrains Mono, monospace' }}
-                  value={voiceId}
-                  onChange={e => setVoiceId(e.target.value)}
-                  placeholder="09d4ef3e"
-                  spellCheck={false}
-                />
-                <button
-                  style={styles.resetBtn}
-                  onClick={() => setVoiceId(DEFAULT_VOICE_ID)}
-                  title="Reset to default"
-                >
-                  ↺
-                </button>
-              </div>
-              <span style={styles.hint}>Default: <code style={styles.code}>{DEFAULT_VOICE_ID}</code> (Jimmy's Resemble AI voice)</span>
-            </label>
-
-            <label style={styles.label}>
-              System Prompt
-              <div style={styles.promptHeader}>
-                <span style={styles.charCount}>{systemPrompt.length} chars</span>
-                <button
-                  style={styles.resetBtn}
-                  onClick={() => setSystemPrompt(DEFAULT_SYSTEM_PROMPT)}
-                >
-                  Reset to default
-                </button>
-              </div>
-              <textarea
-                style={styles.textarea}
-                value={systemPrompt}
-                onChange={e => setSystemPrompt(e.target.value)}
-                rows={14}
-                spellCheck={false}
-              />
-            </label>
-          </aside>
-        )}
-
-        {/* Call panel */}
-        <main style={styles.main}>
-          {/* Status bar */}
-          {isCallActive && (
-            <div style={styles.statusBar}>
-              <div style={styles.statusDot(phase)} />
-              <span style={styles.statusText}>{statusText[phase]}</span>
-              {phase === 'active' && (
-                <div style={styles.indicators}>
-                  {vadActive && <span style={styles.badge('green')}>🎤 Speaking</span>}
-                  {isProcessing && !isPlaying && <span style={styles.badge('yellow')}>⚡ Thinking</span>}
-                  {isPlaying && <span style={styles.badge('purple')}>https://vice-game-backend-production.up.railway.app Playing</span>}
+            {/* Middle — avatar + name + status */}
+            <div style={s.callCenter}>
+              <div style={s.avatarWrap}>
+                <div style={s.avatarCircle}>
+                  <span style={s.avatarLetter}>J</span>
                 </div>
-              )}
+                <div style={{
+                  ...s.statusDot,
+                  background: dotColor,
+                  animation: (isProcessing || isPlaying || vadActive) ? 'pulseDot 1.2s ease-in-out infinite' : 'none',
+                }} />
+              </div>
+              <h2 style={s.contactName}>Jimmy</h2>
+              <p style={s.callStatus}>{callStatusText}</p>
             </div>
-          )}
 
-          {/* Conversation log */}
-          <div style={styles.log}>
-            {messages.length === 0 && !isCallActive && (
-              <div style={styles.emptyState}>
-                <div style={styles.emptyIcon}></div>
-                <div style={styles.emptyTitle}>Ready to test</div>
-                <div style={styles.emptySub}>Configure the prompt and voice ID, then start a call.</div>
-              </div>
-            )}
-            {messages.length === 0 && phase === 'ringing' && (
-              <div style={styles.emptyState}>
-                <div style={{ ...styles.emptyIcon, animation: 'pulse 1s infinite' }}>📲</div>
-                <div style={styles.emptyTitle}>Calling Jimmy…</div>
-                <div style={styles.emptySub}>Generating greeting with your prompt.</div>
-              </div>
-            )}
-            {messages.map((msg, i) => (
-              <div key={i} style={styles.message(msg.role)}>
-                <div style={styles.msgMeta}>
-                  <span style={styles.msgRole(msg.role)}>
-                    {msg.role === 'jimmy' ? ' Jimmy' : 'https://vice-game-backend-production.up.railway.app You'}
-                  </span>
-                  <span style={styles.msgTime}>
-                    {new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                  </span>
-                </div>
-                <div style={styles.msgText}>{msg.text}</div>
-              </div>
-            ))}
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* Error banner */}
-          {error && (
-            <div style={styles.errorBanner}>
-               {error}
-              <button style={styles.errorClose} onClick={() => setError(null)}>✕</button>
-            </div>
-          )}
-
-          {/* Action buttons */}
-          <div style={styles.actions}>
-            {!isCallActive ? (
-              <button style={styles.callBtn} onClick={startCall}>
-                 Start Call
+            {/* Bottom — hangup */}
+            <div style={{ display: 'flex', justifyContent: 'center' }}>
+              <button style={s.hangupBtn} onClick={endCall}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="white">
+                  <path d="M6.6 10.8c1.4 2.8 3.8 5.1 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1-9.4 0-17-7.6-17-17 0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.3 0 .7-.2 1L6.6 10.8z"/>
+                </svg>
               </button>
-            ) : (
-              <button style={styles.hangupBtn} onClick={endCall}>
-                 End Call
-              </button>
-            )}
-          </div>
-
-          {/* Active config summary (visible during call) */}
-          {isCallActive && (
-            <div style={styles.callInfo}>
-              <span style={styles.callInfoItem}>
-                <span style={styles.callInfoLabel}>Voice:</span>
-                <code style={styles.code}>{voiceId || DEFAULT_VOICE_ID}</code>
-              </span>
-              <span style={styles.callInfoDot}>·</span>
-              <span style={styles.callInfoItem}>
-                <span style={styles.callInfoLabel}>Prompt:</span>
-                {systemPrompt.slice(0, 60).trim()}…
-              </span>
             </div>
-          )}
-        </main>
-      </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
-        @keyframes pulse {
+        @keyframes pulseDot {
           0%, 100% { transform: scale(1); opacity: 1; }
-          50% { transform: scale(1.15); opacity: 0.7; }
-        }
-        @keyframes blink {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
+          50% { transform: scale(1.35); opacity: 0.7; }
         }
       `}</style>
     </div>
@@ -796,374 +777,249 @@ export default function App() {
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
-const styles = {
-  root: {
+const s = {
+  // Idle / settings screen
+  idleRoot: {
     display: 'flex',
     flexDirection: 'column' as const,
     height: '100vh',
-    background: 'var(--bg)',
-    color: 'var(--text)',
+    background: '#0f1117',
+    color: '#e2e8f0',
   },
-
-  header: {
+  idleHeader: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '14px 20px',
-    borderBottom: '1px solid var(--border)',
-    background: 'var(--surface)',
+    borderBottom: '1px solid #2e3250',
+    background: '#1a1d27',
     flexShrink: 0,
   },
-  headerLeft: {
+  idleHeaderLeft: {
     display: 'flex',
     alignItems: 'center',
     gap: 12,
   },
-  logo: {
-    fontSize: 26,
-  },
-  headerTitle: {
-    fontWeight: 700,
-    fontSize: 15,
-    color: 'var(--text)',
-  },
-  headerSub: {
-    fontSize: 11,
-    color: 'var(--text-muted)',
-    marginTop: 1,
-  },
-  settingsBtn: {
+  idleTitle: { fontWeight: 700, fontSize: 15 },
+  idleSub: { fontSize: 11, color: '#94a3b8', marginTop: 1 },
+  settingsToggle: {
     padding: '6px 14px',
-    borderRadius: 'var(--radius-sm)',
-    border: '1px solid var(--border)',
+    borderRadius: 6,
+    border: '1px solid #2e3250',
     background: 'transparent',
-    color: 'var(--text-muted)',
+    color: '#94a3b8',
     cursor: 'pointer',
     fontSize: 13,
-    transition: 'all 0.15s',
   },
-
-  body: {
-    display: 'flex',
+  idleBody: {
     flex: 1,
-    overflow: 'hidden',
-  },
-
-  settings: {
-    width: 400,
-    flexShrink: 0,
-    padding: '20px',
-    borderRight: '1px solid var(--border)',
     overflowY: 'auto' as const,
-    background: 'var(--surface)',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    maxWidth: 600,
+    margin: '0 auto',
+    width: '100%',
+    padding: '28px 20px',
+    gap: 20,
+  },
+  settingsPanel: {
     display: 'flex',
     flexDirection: 'column' as const,
     gap: 20,
   },
-
-  sectionTitle: {
-    fontSize: 13,
+  sectionLabel: {
+    fontSize: 11,
     fontWeight: 600,
-    color: 'var(--text-muted)',
+    color: '#94a3b8',
     textTransform: 'uppercase' as const,
     letterSpacing: '0.08em',
-    marginBottom: 4,
   },
-
-  label: {
+  fieldLabel: {
     display: 'flex',
     flexDirection: 'column' as const,
     gap: 6,
     fontSize: 13,
-    color: 'var(--text-muted)',
+    color: '#94a3b8',
     fontWeight: 500,
   },
-
   input: {
     padding: '9px 12px',
-    borderRadius: 'var(--radius-sm)',
-    border: '1px solid var(--border)',
-    background: 'var(--surface2)',
-    color: 'var(--text)',
+    borderRadius: 6,
+    border: '1px solid #2e3250',
+    background: '#222535',
+    color: '#e2e8f0',
     fontSize: 13,
     outline: 'none',
+    width: '100%',
   } as React.CSSProperties,
-
-  voiceRow: {
+  row: {
     display: 'flex',
-    gap: 8,
     alignItems: 'center',
+    gap: 8,
+    justifyContent: 'space-between',
   },
-
   resetBtn: {
-    padding: '6px 10px',
-    borderRadius: 'var(--radius-sm)',
-    border: '1px solid var(--border)',
+    padding: '6px 12px',
+    borderRadius: 6,
+    border: '1px solid #2e3250',
     background: 'transparent',
-    color: 'var(--text-muted)',
+    color: '#94a3b8',
     cursor: 'pointer',
     fontSize: 12,
     whiteSpace: 'nowrap' as const,
+    flexShrink: 0,
   },
-
-  hint: {
+  hint: { fontSize: 11, color: '#475569' },
+  mono: {
+    fontFamily: 'monospace',
     fontSize: 11,
-    color: 'var(--text-faint)',
-  },
-
-  code: {
-    fontFamily: 'JetBrains Mono, monospace',
-    fontSize: 11,
-    background: 'var(--surface2)',
+    background: '#222535',
     padding: '1px 5px',
     borderRadius: 4,
-    border: '1px solid var(--border)',
+    border: '1px solid #2e3250',
   } as React.CSSProperties,
-
-  promptHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-
-  charCount: {
-    fontSize: 11,
-    color: 'var(--text-faint)',
-  },
-
   textarea: {
     padding: '10px 12px',
-    borderRadius: 'var(--radius-sm)',
-    border: '1px solid var(--border)',
-    background: 'var(--surface2)',
-    color: 'var(--text)',
+    borderRadius: 6,
+    border: '1px solid #2e3250',
+    background: '#222535',
+    color: '#e2e8f0',
     fontSize: 13,
-    fontFamily: 'JetBrains Mono, monospace',
+    fontFamily: 'monospace',
     lineHeight: 1.6,
     resize: 'vertical' as const,
     outline: 'none',
     minHeight: 220,
+    width: '100%',
   } as React.CSSProperties,
-
-  // ── Main call area ────────────────────────────────────────────────────────
-
-  main: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    overflow: 'hidden',
-    padding: 20,
-    gap: 16,
-  },
-
-  statusBar: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 10,
-    padding: '10px 16px',
-    borderRadius: 'var(--radius)',
-    background: 'var(--surface)',
-    border: '1px solid var(--border)',
-    flexShrink: 0,
-  },
-
-  statusDot: (phase: CallPhase): React.CSSProperties => ({
-    width: 8,
-    height: 8,
-    borderRadius: '50%',
-    background: phase === 'active' ? 'var(--green)'
-               : phase === 'ringing' || phase === 'connecting' ? 'var(--yellow)'
-               : phase === 'ending' ? 'var(--red)'
-               : 'var(--text-faint)',
-    flexShrink: 0,
-    animation: phase === 'ringing' || phase === 'connecting' ? 'blink 1s infinite' : 'none',
-  }),
-
-  statusText: {
-    fontWeight: 600,
-    fontSize: 14,
-    color: 'var(--text)',
-    minWidth: 60,
-  },
-
-  indicators: {
-    display: 'flex',
-    gap: 8,
-    marginLeft: 'auto',
-  },
-
-  badge: (color: 'green' | 'yellow' | 'purple'): React.CSSProperties => ({
-    fontSize: 12,
-    padding: '3px 10px',
-    borderRadius: 20,
-    fontWeight: 500,
-    background: color === 'green' ? 'var(--green-dim)'
-              : color === 'yellow' ? 'rgba(245,158,11,0.12)'
-              : 'var(--accent-dim)',
-    color: color === 'green' ? 'var(--green)'
-         : color === 'yellow' ? 'var(--yellow)'
-         : 'var(--accent)',
-    border: `1px solid ${
-      color === 'green' ? 'rgba(34,197,94,0.25)'
-      : color === 'yellow' ? 'rgba(245,158,11,0.25)'
-      : 'rgba(108,99,255,0.25)'
-    }`,
-  }),
-
-  log: {
-    flex: 1,
-    overflowY: 'auto' as const,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: 10,
-    padding: 4,
-  },
-
-  emptyState: {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '60px 20px',
-    textAlign: 'center' as const,
-    color: 'var(--text-faint)',
-    gap: 10,
-  },
-
-  emptyIcon: {
-    fontSize: 42,
-    marginBottom: 8,
-  },
-
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: 600,
-    color: 'var(--text-muted)',
-  },
-
-  emptySub: {
-    fontSize: 13,
-    maxWidth: 300,
-    lineHeight: 1.6,
-  },
-
-  message: (role: 'jimmy' | 'user'): React.CSSProperties => ({
-    padding: '12px 16px',
-    borderRadius: 'var(--radius)',
-    background: role === 'jimmy' ? 'var(--surface)' : 'var(--accent-dim)',
-    border: `1px solid ${role === 'jimmy' ? 'var(--border)' : 'rgba(108,99,255,0.3)'}`,
-    alignSelf: role === 'jimmy' ? 'flex-start' : 'flex-end',
-    maxWidth: '80%',
-  }),
-
-  msgMeta: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 5,
-    gap: 16,
-  },
-
-  msgRole: (role: 'jimmy' | 'user'): React.CSSProperties => ({
-    fontSize: 11,
-    fontWeight: 600,
-    color: role === 'jimmy' ? 'var(--text-muted)' : 'var(--accent)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.06em',
-  }),
-
-  msgTime: {
-    fontSize: 11,
-    color: 'var(--text-faint)',
-  },
-
-  msgText: {
-    fontSize: 14,
-    lineHeight: 1.6,
-    color: 'var(--text)',
-  },
-
   errorBanner: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     padding: '10px 16px',
-    borderRadius: 'var(--radius-sm)',
-    background: 'var(--red-dim)',
+    borderRadius: 6,
+    background: 'rgba(239,68,68,0.12)',
     border: '1px solid rgba(239,68,68,0.3)',
-    color: 'var(--red)',
+    color: '#ef4444',
     fontSize: 13,
-    flexShrink: 0,
   },
-
   errorClose: {
     background: 'transparent',
     border: 'none',
-    color: 'var(--red)',
+    color: '#ef4444',
     cursor: 'pointer',
     fontSize: 14,
     padding: '0 4px',
   },
-
-  actions: {
+  callBtnWrap: {
     display: 'flex',
     justifyContent: 'center',
-    flexShrink: 0,
+    paddingTop: 12,
   },
-
   callBtn: {
-    padding: '14px 48px',
-    borderRadius: 40,
-    border: 'none',
-    background: 'var(--green)',
-    color: '#fff',
-    fontWeight: 700,
-    fontSize: 15,
-    cursor: 'pointer',
-    boxShadow: '0 4px 20px rgba(34,197,94,0.3)',
-    transition: 'all 0.2s',
-  } as React.CSSProperties,
-
-  hangupBtn: {
-    padding: '14px 48px',
-    borderRadius: 40,
-    border: 'none',
-    background: 'var(--red)',
-    color: '#fff',
-    fontWeight: 700,
-    fontSize: 15,
-    cursor: 'pointer',
-    boxShadow: '0 4px 20px rgba(239,68,68,0.3)',
-    transition: 'all 0.2s',
-  } as React.CSSProperties,
-
-  callInfo: {
     display: 'flex',
     alignItems: 'center',
-    gap: 8,
-    fontSize: 11,
-    color: 'var(--text-faint)',
+    gap: 10,
+    padding: '15px 52px',
+    borderRadius: 50,
+    border: 'none',
+    background: '#22c55e',
+    color: '#fff',
+    fontWeight: 700,
+    fontSize: 16,
+    cursor: 'pointer',
+    boxShadow: '0 6px 24px rgba(34,197,94,0.35)',
+  } as React.CSSProperties,
+
+  // Active call screen
+  callRoot: {
+    position: 'fixed' as const,
+    inset: 0,
+    background: '#000',
+    display: 'flex',
+    alignItems: 'center',
     justifyContent: 'center',
-    flexWrap: 'wrap' as const,
-    flexShrink: 0,
   },
-
-  callInfoItem: {
+  callBg: {
+    position: 'absolute' as const,
+    inset: 0,
+    background: 'radial-gradient(ellipse at 50% 30%, rgba(109,40,217,0.5) 0%, rgba(0,0,0,0) 68%)',
+    pointerEvents: 'none' as const,
+  },
+  callCard: {
+    position: 'relative' as const,
+    width: '100%',
+    maxWidth: 360,
+    height: '100%',
+    maxHeight: 760,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    justifyContent: 'space-between',
+    padding: '64px 32px',
+  },
+  callCenter: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    alignItems: 'center',
+    flex: 1,
+    justifyContent: 'center',
+    gap: 16,
+  },
+  avatarWrap: {
+    position: 'relative' as const,
+    width: 192,
+    height: 192,
+    marginBottom: 8,
+  },
+  avatarCircle: {
+    width: '100%',
+    height: '100%',
+    borderRadius: '50%',
+    border: '4px solid rgba(255,255,255,0.15)',
+    background: 'linear-gradient(135deg, #6d28d9 0%, #a855f7 55%, #ec4899 100%)',
     display: 'flex',
     alignItems: 'center',
-    gap: 5,
+    justifyContent: 'center',
+    boxShadow: '0 24px 64px rgba(109,40,217,0.55)',
   },
-
-  callInfoLabel: {
+  avatarLetter: {
+    fontSize: 84,
+    fontWeight: 800,
+    color: 'rgba(255,255,255,0.95)',
+    lineHeight: 1,
+    textShadow: '0 2px 16px rgba(0,0,0,0.4)',
+  },
+  statusDot: {
+    position: 'absolute' as const,
+    top: 16,
+    right: 16,
+    width: 18,
+    height: 18,
+    borderRadius: '50%',
+    border: '2.5px solid #fff',
+    transition: 'background 0.3s',
+  } as React.CSSProperties,
+  contactName: {
+    fontSize: 28,
     fontWeight: 600,
-    color: 'var(--text-faint)',
-    textTransform: 'uppercase' as const,
-    letterSpacing: '0.06em',
-    fontSize: 10,
+    color: '#fff',
+    letterSpacing: '-0.02em',
   },
-
-  callInfoDot: {
-    color: 'var(--text-faint)',
+  callStatus: {
+    fontSize: 17,
+    color: 'rgba(255,255,255,0.6)',
+    minHeight: 26,
   },
+  hangupBtn: {
+    width: 68,
+    height: 68,
+    borderRadius: '50%',
+    border: 'none',
+    background: '#ef4444',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    boxShadow: '0 8px 28px rgba(239,68,68,0.5)',
+  } as React.CSSProperties,
 };
