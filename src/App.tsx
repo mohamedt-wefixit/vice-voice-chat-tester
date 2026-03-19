@@ -650,7 +650,7 @@ export default function App() {
                 <div style={styles.indicators}>
                   {vadActive && <span style={styles.badge('green')}>🎤 Speaking</span>}
                   {isProcessing && !isPlaying && <span style={styles.badge('yellow')}>⚡ Thinking</span>}
-                  {isPlaying && <span style={styles.badge('purple')}>🔊 Playing</span>}
+                  {isPlaying && <span style={styles.badge('purple')}>https://vice-game-backend-production.up.railway.app Playing</span>}
                 </div>
               )}
             </div>
@@ -676,7 +676,7 @@ export default function App() {
               <div key={i} style={styles.message(msg.role)}>
                 <div style={styles.msgMeta}>
                   <span style={styles.msgRole(msg.role)}>
-                    {msg.role === 'jimmy' ? ' Jimmy' : '🧑 You'}
+                    {msg.role === 'jimmy' ? ' Jimmy' : 'https://vice-game-backend-production.up.railway.app You'}
                   </span>
                   <span style={styles.msgTime}>
                     {new Date(msg.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
