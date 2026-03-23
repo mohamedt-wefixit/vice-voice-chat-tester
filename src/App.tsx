@@ -219,7 +219,7 @@ export default function App() {
       setMessages(prev => [...prev, { role: 'jimmy', text: data.text, ts: Date.now() }]);
 
       // Wait for greeting audio to nearly finish (500ms early) then open mic.
-      // The 1200ms deaf period in the processor handles remaining echo — no need
+      // The 200ms deaf period in the processor handles remaining echo — no need
       // to also start the echo guard timer here.
       const audioContext = streamingAudioContextRef.current;
       if (audioContext && streamingStartTimeRef.current > 0) {
@@ -232,7 +232,7 @@ export default function App() {
 
       setIsPlaying(false);
       jimmySpeakingRef.current = false;
-      echoGuardRef.current = 0; // let 1200ms deaf period handle echo, don't stack 600ms on top
+      echoGuardRef.current = 0; // let 200ms deaf period handle echo, don't stack on top
 
       // Tell backend greeting playback is done
       if (socketRef.current && sessionIdRef.current) {
@@ -480,8 +480,8 @@ export default function App() {
       processor.onaudioprocess = (e: AudioProcessingEvent) => {
         if (!socketRef.current || !sessionIdRef.current) return;
 
-        // 1200ms deaf period to avoid capturing greeting echo
-        if (Date.now() - micStartedAtRef.current < 1200) return;
+        // Short deaf period — mic starts only after greeting fully ends, 200ms clears room reverb tail
+        if (Date.now() - micStartedAtRef.current < 200) return;
 
         const rawInput = e.inputBuffer.getChannelData(0);
 
